@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Amogus 2D: Skeld Station Fixed</title>
+    <style>
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; touch-action: none; }
+        body, html { margin: 0; padding: 0; overflow: hidden; background-color: #05070a; font-family: sans-serif; width: 100%; height: 100%; }
+        #canvas-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        canvas { display: block; background-color: #0b0e14; }
+        .hud-panel { position: absolute; top: 15px; left: 15px; color: #fff; font-weight: bold; font-size: 14px; background: rgba(15, 22, 36, 0.9); padding: 12px 18px; border-radius: 6px; border: 2px solid #233149; line-height: 1.6; z-index: 10; pointer-events: none; min-width: 220px; }
+        #action-buttons { position: absolute; bottom: 25px; right: 25px; display: flex; gap: 15px; z-index: 10; }
+        .game-btn { width: 85px; height: 85px; border-radius: 50%; border: 3px solid #fff; color: white; font-weight: bold; font-size: 13px; text-transform: uppercase; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; cursor: pointer; opacity: 0.3; box-shadow: 0 4px 8px rgba(0,0,0,0.5); -webkit-tap-highlight-color: transparent; }
+        .active-kill { opacity: 1 !important; background: #e74c3c !important; box-shadow: 0 0 15px #e74c3c !important; }
+        .active-sabotage { opacity: 1 !important; background: #9b59b6 !important; box-shadow: 0 0 15px #9b59b6 !important; }
+        .active-vent { opacity: 1 !important; background: #2ecc71 !important; box-shadow: 0 0 15px #2ecc71 !important; }
+        /* Фиксированный джойстик на чистом HTML/CSS */
+        #joystick-container { position: absolute; bottom: 40px; left: 40px; width: 120px; height: 120px; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; display: flex; justify-content: center; align-items: center; z-index: 10; touch-action: none; }
+        #joystick-knob { width: 45px; height: 45px; background: rgba(255, 255, 255, 0.75); border-radius: 50%; position: absolute; box-shadow: 0 4px 10px rgba(0,0,0,0.4); transition: transform 0.05s linear; pointer-events: none; }
+        #meeting-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 9, 18, 0.96); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; color: white; }
+        #voters-list { display: flex; flex-direction: column; gap: 8px; width: 90%; max-width: 420px; margin-top: 15px; }
+        .voter-card { background: #16202c; border: 2px solid #2c3a4e; padding: 12px 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 15px; font-weight: bold; cursor: pointer; }
+        .voter-card.dead { opacity: 0.25; text-decoration: line-through; pointer-events: none; background: #0d131a; border-color: #1a222d; }
+        .bot-badge { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; border: 1.5px solid #000; }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="gameCanvas"></canvas>
+        <div class="hud-panel">
+            <span style="color: #64ffda; font-size: 11px; letter-spacing: 1px; display: block; margin-bottom: 2px;">MAP: THE SKELD 2D</span>
+            Роль: <span style="color: #ff4757; text-shadow: 0 0 5px rgba(255,71,87,0.3);">ПРЕДАТЕЛЬ</span><br>
+            Живой экипаж: <span id="bots-count" style="color: #54a0ff;">5</span><br>
+            Саботаж реактора: <span id="sabotage-count" style="color: #1dd1a1;">0/3</span><br>
+            <div id="game-alert" style="color: #ff9f43; margin-top: 4px; font-size: 13px;">Статус: Ожидание систем...</div>
+        </div>
+        <div id="joystick-container"><div id="joystick-knob"></div></div>
+        <div id="action-buttons">
+            <button class="game-btn" id="vent-btn">Люк</button>
+            <button class="game-btn" id="sabotage-btn">Саботаж</button>
+            <button class="game-btn" id="kill-btn">Убить</button>
+        </div>
+        <div id="meeting-screen">
+            <div style="font-size: 32px; color: #ff9f43; font-weight: bold; text-shadow: 0 0 10px rgba(255,159,67,0.4);">📢 СТРАТЕГИЧЕСКОЕ СОБРАНИЕ</div>
+            <div id="meeting-subtitle" style="color: #a4b0be; margin-top: 5px;">Обнаружены следы декомпрессии!</div>
+            <div id="voters-list"></div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
+        const VIRTUAL_WIDTH = 1280, VIRTUAL_HEIGHT = 720;
+        const MAP_SIZE = 4800, TILE_SIZE = 160; 
+        
+        const player = { x: MAP_SIZE / 2, y: MAP_SIZE / 2, radius: 22, speed: 480, vx: 0, vy: 0, color: '#ff4757', name: 'Вы', inVent: false, currentVentIdx: -1 };
+        
+        let killCooldown = 0, maxKillCooldown = 12, gameActive = true, inMeeting = false, activeSabotage = false;
+        let repairedSabotages = 0, sabotageTimer = 0, targetBot = null, targetVent = null;
+
+        const walls = [];
+        const targets = {};
+        const vents = [];
+        const bots = [];
+        const deadBodies = [];
+
+        const colors = ['#54a0ff', '#1dd1a1', '#feca57', '#ff9ff3', '#f5f6fa'];
+        const poolNames = ['Кеп', 'Док', 'Лис', 'Алекс', 'Борт', 'Нова', 'Макс', 'Старк', 'Вега', 'Грей'];
+        const names = poolNames.sort(() => 0.5 - Math.random()).slice(0, 5);
+
+        const mapBlueprint = [
+            "111111111111111111111111111111",
+            "1A0000011000000C000011000000B1",
+            "100000011000000000001100000001",
+            "100000000000111111000000000001",
+            "111100111111111111111100111111",
+            "111100111111111111111100111111",
+            "100000000000000000000000000001",
+            "100000000000000000000000000001",
+            "110011111100111111001111110011",
+            "110011111100111111001111110011",
+            "10000000110011EE11001100000001",
+            "10000000110011EE11001100000001",
+            "100000000000000000000000000001",
+            "100000000000000000000000000001",
+            "111100111111110011111111001111",
+            "111100111111110011111111001111",
+            "100000000000000000000000000001",
+            "100000000000000000000000000001",
+            "110011111100111111001111110011",
+            "110011111100111111001111110011",
+            "100000001100111111001100000001",
+            "100000001100000000001100000001",
+            "100000001111110011111100000001",
+            "111100111111110011111111001111",
+            "100000000000000000000000000001",
+            "100000000000000000000000000001",
+            "100000001100000000001100000001",
+            "1D00000110000000000011000000F1",
+            "111111111111111111111111111111"
+        ];
+
+        mapBlueprint.forEach((row, rIdx) => {
+            for (let cIdx = 0; cIdx < row.length; cIdx++) {
+                let char = row[cIdx], x = cIdx * TILE_SIZE, y = rIdx * TILE_SIZE;
+                if (char === '1') walls.push({ x, y, width: TILE_SIZE, height: TILE_SIZE });
+                else if (char === 'E') targets.generator = { x: x + 80, y: y + 80, radius: 70, color: '#9b59b6', name: 'Реактор (Саботаж)' };
+                else if (char === 'A') targets.taskA = { x: x + 80, y: y + 80, radius: 50, color: '#f1c40f', name: 'Кафетерий (Задание)' };
+                else if (char === 'B') targets.taskB = { x: x + 80, y: y + 80, radius: 50, color: '#f1c40f', name: 'Оружейная (Задание)' };
+                else if (char === 'C') targets.taskC = { x: x + 80, y: y + 80, radius: 50, color: '#f1c40f', name: 'Навигация (Задание)' };
+                else if (char === 'D') targets.taskD = { x: x + 80, y: y + 80, radius: 50, color: '#f1c40f', name: 'Медпункт (Задание)' };
+                else if (char === 'F') targets.taskF = { x: x + 80, y: y + 80, radius: 50, color: '#f1c40f', name: 'Электрика (Задание)' };
+            }
+        });
+
+        vents.push(
+            { x: targets.taskA.x, y: targets.taskA.y + 80, radius: 28, name: 'Люк: Кафетерий' },
+            { x: targets.generator.x - 120, y: targets.generator.y, radius: 28, name: 'Люк: Реактор' },
+            { x: targets.taskF.x, y: targets.taskF.y - 80, radius: 28, name: 'Люк: Электрика' }
+        );
+
+        const targetKeys = ['taskA', 'taskB', 'taskC', 'taskD', 'taskF'];
+        for (let i = 0; i < 5; i++) {
+            let room = targets[targetKeys[i]];
+            bots.push({ id: i, name: names[i], x: room.x + (Math.random() * 80 - 40), y: room.y + (Math.random() * 80 - 40), radius: 23, speed: 235, color: colors[i], isAlive: true, targetPoint: null, state: 'WANDERING' });
+        }
+                const joystick = document.getElementById('joystick-container'), knob = document.getElementById('joystick-knob');
+        let joyVec = { x: 0, y: 0 }, isJoy = false;
+        const keys = { w:0, a:0, s:0, d:0, ц:0, ф:0, ы:0, в:0 };
+
+        function resize() {
+            const scale = Math.min(window.innerWidth / VIRTUAL_WIDTH, window.innerHeight / VIRTUAL_HEIGHT);
+            canvas.width = VIRTUAL_WIDTH * scale; canvas.height = VIRTUAL_HEIGHT * scale;
+            ctx.scale(scale, scale);
+        }
+        window.addEventListener('resize', resize); resize();
+
+        joystick.addEventListener('pointerdown', (e) => { if(player.inVent) return; isJoy = true; moveJoy(e); });
+        window.addEventListener('pointermove', (e) => { if (isJoy) moveJoy(e); });
+        window.addEventListener('pointerup', () => { isJoy = false; joyVec = {x:0, y:0}; knob.style.transform = 'translate(0px,0px)'; });
+
+        function moveJoy(e) {
+            const rect = joystick.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            let dx = e.clientX - centerX;
+            let dy = e.clientY - centerY;
+            const dist = Math.hypot(dx, dy);
+            const maxRadius = rect.width / 2;
+
+            if (dist > maxRadius) {
+                dx = (dx / dist) * maxRadius;
+                dy = (dy / dist) * maxRadius;
+            }
+            knob.style.transform = `translate(${dx}px,${dy}px)`;
+            joyVec = { x: dx/maxRadius, y: dy/maxRadius };
+        }
+
+        window.addEventListener('keydown', (e) => { let k = e.key.toLowerCase(); if (k in keys) keys[k] = 1; });
+        window.addEventListener('keyup', (e) => { let k = e.key.toLowerCase(); if (k in keys) keys[k] = 0; });
+
+        function checkWall(cx, cy, radius) {
+            return walls.some(w => {
+                if (Math.abs(w.x - cx) > TILE_SIZE * 2 || Math.abs(w.y - cy) > TILE_SIZE * 2) return false;
+                let clX = Math.max(w.x, Math.min(cx, w.x + w.width)), clY = Math.max(w.y, Math.min(cy, w.y + w.height));
+                return Math.hypot(cx - clX, cy - clY) < radius;
+            });
+        }
+
+        function updateBots(dt) {
+            bots.forEach(b => {
+                if (!b.isAlive) return;
+                deadBodies.forEach(body => { if (Math.hypot(b.x - body.x, b.y - body.y) < 280) startMeeting(`${b.name} обнаружил останки!`); });
+
+                if (activeSabotage && b.state !== 'SABOTAGE') { b.state = 'SABOTAGE'; b.targetPoint = targets.generator; }
+                else if (!activeSabotage && b.state === 'SABOTAGE') { b.state = 'WANDERING'; b.targetPoint = null; }
+
+                if (!b.targetPoint) {
+                    let arr = Object.values(targets); b.targetPoint = arr[Math.floor(Math.random() * arr.length)];
+                }
+
+                let dx = b.targetPoint.x - b.x, dy = b.targetPoint.y - b.y, dist = Math.hypot(dx, dy);
+                if (dist > 30) {
+                    let vx = (dx/dist)*b.speed, vy = (dy/dist)*b.speed; 
+                    if (!checkWall(b.x + vx*dt, b.y, b.radius)) b.x += vx*dt;
+                    if (!checkWall(b.x, b.y + vy*dt, b.radius)) b.y += vy*dt;
+                } else if (b.state === 'SABOTAGE') {
+                    sabotageTimer += dt;
+                    document.getElementById('game-alert').innerText = 'Внимание: Экипаж ликвидирует сбой!';
+                    if (sabotageTimer >= 4.0) { activeSabotage = false; sabotageTimer = 0; repairedSabotages++; document.getElementById('sabotage-count').innerText = `${repairedSabotages}/3`; document.getElementById('game-alert').innerText = 'Система реактора стабилизирована'; checkEnd(); }
+                } else { b.targetPoint = null; }
+            });
+        }
+                const btnKill = document.getElementById('kill-btn'), btnSab = document.getElementById('sabotage-btn'), btnVent = document.getElementById('vent-btn');
+
+        function checkInteractions() {
+            if (!gameActive || inMeeting) return;
+            targetVent = null; let minVDist = Infinity;
+            vents.forEach((v, idx) => {
+                let d = Math.hypot(player.x - v.x, player.y - v.y);
+                if (d < minVDist) { minVDist = d; targetVent = { ...v, idx }; }
+            });
+
+            if (player.inVent) { btnVent.classList.add('active-vent'); btnVent.innerText = "Выйти"; }
+            else if (targetVent && minVDist < 85) { btnVent.classList.add('active-vent'); btnVent.innerText = "Вентиляция"; }
+            else { btnVent.classList.remove('active-vent'); btnVent.innerText = "Люк"; targetVent = null; }
+
+            targetBot = null; let minDist = Infinity;
+            if (!player.inVent) {
+                bots.forEach(b => {
+                    if (!b.isAlive) return;
+                    let d = Math.hypot(player.x - b.x, player.y - b.y);
+                    if (d < minDist) { minDist = d; targetBot = b; }
+                });
+            }
+            if (targetBot && minDist < 100 && killCooldown <= 0) { btnKill.classList.add('active-kill'); btnKill.innerText = "Ликвидация"; }
+            else { btnKill.classList.remove('active-kill'); btnKill.innerText = killCooldown > 0 ? Math.ceil(killCooldown)+"s" : "Убить"; targetBot = null; }
+
+            if (!activeSabotage && !player.inVent) btnSab.classList.add('active-sabotage'); else btnSab.classList.remove('active-sabotage');
+            deadBodies.forEach(b => { if (Math.hypot(player.x - b.x, player.y - b.y) < 65 && !player.inVent) startMeeting("Вы сообщили о нарушении!"); });
+        }
+
+        btnVent.addEventListener('click', () => {
+            if (player.inVent) {
+                let curr = vents[player.currentVentIdx]; player.x = curr.x; player.y = curr.y + 45; player.inVent = false; player.currentVentIdx = -1;
+            } else if (targetVent) {
+                player.inVent = true; player.currentVentIdx = targetVent.idx; player.x = targetVent.x; player.y = targetVent.y;
+            }
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && player.inVent) {
+                e.preventDefault(); player.currentVentIdx = (player.currentVentIdx + 1) % vents.length;
+                player.x = vents[player.currentVentIdx].x; player.y = vents[player.currentVentIdx].y;
+            }
+        });
+
+        btnKill.addEventListener('click', () => {
+            if (targetBot && killCooldown <= 0) {
+                targetBot.isAlive = false; deadBodies.push({ x: targetBot.x, y: targetBot.y, color: targetBot.color });
+                killCooldown = maxKillCooldown; document.getElementById('bots-count').innerText = bots.filter(b=>b.isAlive).length; checkEnd();
+            }
+        });
+        btnSab.addEventListener('click', () => { if (!activeSabotage && !inMeeting && !player.inVent) { activeSabotage = true; sabotageTimer = 0; } });
+
+        function startMeeting(txt) {
+            if(player.inVent) { player.inVent = false; player.currentVentIdx = -1; }
+            inMeeting = true; isJoy = false; joyVec = {x:0,y:0}; knob.style.transform = 'translate(0px,0px)';
+            document.getElementById('meeting-subtitle').innerText = txt;
+            const container = document.getElementById('voters-list'); container.innerHTML = '';
+            bots.forEach(b => {
+                let card = document.createElement('div'); card.className = `voter-card ${b.isAlive ? '' : 'dead'}`;
+                card.innerHTML = `<span><span class="bot-badge" style="background:${b.color}"></span>${b.name}</span><span>${b.isAlive?'Исключить':'-'}</span>`;
+                if (b.isAlive) card.onclick = () => vote(b.id);
+                container.appendChild(card);
+            });
+            document.getElementById('meeting-screen').style.display = 'flex';
+        }
+
+        function vote(id) {
+            document.getElementById('meeting-screen').style.display = 'none'; inMeeting = false;
+            let votes = { 'player': 0 }; bots.forEach(b => { if(b.isAlive) votes[b.id] = 0; });
+            votes[id]++;
+            bots.forEach(b => { if (b.isAlive) { let p = bots.filter(x=>x.isAlive && x.id!==b.id).map(x=>x.id); p.push('player'); votes[p[Math.floor(Math.random()*p.length)]]++; } });
+            
+            let maxV = -1, kicked = null;
+            for (let k in votes) { if (votes[k] > maxV) { maxV = votes[k]; kicked = k; } }
+            if (kicked === 'player') { gameActive = false; document.getElementById('game-alert').innerText = 'Экипаж раскрыл предателя!'; }
+            else {
+                let b = bots.find(x => x.id == kicked); b.isAlive = false;
+                document.getElementById('bots-count').innerText = bots.filter(x=>x.isAlive).length;
+                player.x = MAP_SIZE/2; player.y = MAP_SIZE/2;
+                bots.forEach(x => { x.x = MAP_SIZE/2+Math.random()*160-80; x.y = MAP_SIZE/2+Math.random()*160-80; x.targetPoint = null; });
+                deadBodies.length = 0; killCooldown = 0; checkEnd();
+            }
+        }
+
+        function checkEnd() {
+            let alive = bots.filter(b => b.isAlive).length;
+            if (alive === 0) { gameActive = false; document.getElementById('game-alert').innerText = 'ПОБЕДА: Станция захвачена!'; }
+            else if (repairedSabotages >= requiredSabotagesToWin) { gameActive = false; document.getElementById('game-alert').innerText = 'ПОРАЖЕНИЕ: Саботаж провален'; }
+        }
+
+        let lastTime = performance.now();
+        function loop(now) {
+            const dt = Math.min((now - lastTime) / 1000, 0.1); lastTime = now;
+            if (gameActive && !inMeeting) {
+                if (killCooldown > 0) killCooldown -= dt;
+                let mx = 0, my = 0;
+                if (isJoy) { mx = joyVec.x; my = joyVec.y; }
+                else {
+                    if (keys.w || keys.ц) my = -1; if (keys.s || keys.ы) my = 1;
+                    if (keys.a || keys.ф) mx = -1; if (keys.d || keys.в) mx = 1;
+                    let l = Math.hypot(mx, my); if (l > 0) { mx /= l; my /= l; }
+                }
+                if (!player.inVent) {
+                    player.vx = mx * player.speed; player.vy = my * player.speed;
+                    if (player.x + player.vx*dt > player.radius && player.x + player.vx*dt < MAP_SIZE - player.radius && !checkWall(player.x + player.vx*dt, player.y, player.radius)) player.x += player.vx*dt;
+                    if (player.y + player.vy*dt > player.radius && player.y + player.vy*dt < MAP_SIZE - player.radius && !checkWall(player.x, player.y + player.vy*dt, player.radius)) player.y += player.vy*dt;
+                }
+                updateBots(dt); checkInteractions();
+            }
+
+            ctx.clearRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+            ctx.save(); ctx.translate(VIRTUAL_WIDTH/2 - player.x, VIRTUAL_HEIGHT/2 - player.y);
+            ctx.fillStyle = '#101721'; ctx.fillRect(0, 0, MAP_SIZE, MAP_SIZE);
+            ctx.strokeStyle = '#1b2636'; ctx.lineWidth = 3;
+            for (let i = 0; i <= MAP_SIZE; i += 160) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,MAP_SIZE); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(MAP_SIZE,i); ctx.stroke(); }
+            
+            for (let k in targets) { let t = targets[k]; ctx.fillStyle = t.color; ctx.beginPath(); ctx.arc(t.x, t.y, t.radius, 0, Math.PI*2); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='bold 14px sans-serif'; ctx.textAlign='center'; ctx.fillText(t.name, t.x, t.y - t.radius - 10); }
+            vents.forEach(v => { ctx.fillStyle = '#2c3e50'; ctx.beginPath(); ctx.arc(v.x, v.y, v.radius, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle='#7f8c8d'; ctx.lineWidth=4; ctx.stroke(); });
+            ctx.fillStyle = '#2c3e50'; walls.forEach(w => { ctx.fillRect(w.x, w.y, w.width, w.height); ctx.strokeStyle = '#1a252f'; ctx.lineWidth = 3; ctx.strokeRect(w.x, w.y, w.width, w.height); });
+            deadBodies.forEach(b => { ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(b.x, b.y, player.radius, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(b.x-3, b.y-12, 6, 12); });
+            
+            bots.forEach(b => { 
+                if (!b.isAlive) return; 
+                ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = '#dff9fb'; ctx.beginPath(); ctx.ellipse(b.x+6, b.y-4, 8, 4, 0, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = '#ffffff'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(b.name, b.x, b.y - b.radius - 8);
+            });
+            
+            if (!player.inVent) {
+                ctx.fillStyle = player.color; ctx.beginPath(); ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = '#dff9fb'; ctx.beginPath(); ctx.ellipse(player.x+6, player.y-4, 8, 4, 0, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = '#ff4757'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(player.name, player.x, player.y - player.radius - 8);
+            } else {
+                ctx.fillStyle = '#2ecc71'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.fillText("В вентиляции (Space - прыжок)", player.x, player.y - 45);
+            }
+            ctx.restore();
+
+            if (!inMeeting) {
+                              const rS = 145, rX = VIRTUAL_WIDTH - rS - 25, rY = 25;
+                ctx.fillStyle = 'rgba(11,14,23,0.9)'; ctx.fillRect(rX, rY, rS, rS);
+                ctx.strokeStyle = '#233149'; ctx.strokeRect(rX, rY, rS, rS);
+                ctx.fillStyle = '#ff4757'; ctx.beginPath(); ctx.arc(rX + (player.x/MAP_SIZE)*rS, rY + (player.y/MAP_SIZE)*rS, 4, 0, Math.PI*2); ctx.fill();
+                bots.forEach(b => { if (b.isAlive) { ctx.fillStyle = '#54a0ff'; ctx.beginPath(); ctx.arc(rX + (b.x/MAP_SIZE)*rS, rY + (b.y/MAP_SIZE)*rS, 3, 0, Math.PI*2); ctx.fill(); } });
+            }
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
+  
